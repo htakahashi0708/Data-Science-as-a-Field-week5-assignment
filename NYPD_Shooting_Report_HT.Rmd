@@ -1,0 +1,337 @@
+---
+title: "EDA of NYPD Shooting Report"
+author: "Hidetake Takahashi"
+date: "2021/9/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Table of Contents
+
+1. Read Files
+2. Analysis
+3. Modeling
+4. Conclusion and Bias
+
+## Introduction
+
+NYPD shooting report data consists of Location of incident, race and age of victims, Date and Time, etc which were occurred from 2006 to 2020. There are lots of Missing data (NA) in perpetrator's information (PERP_RACE, etc) because they are not identified. However, if those information can be predicted, it will be helpful for investigation. Because of this interests, this report indicates relationship between Y (PERP_RACE) and X(VIC_RACE, OCCUR_TIME, LOCATION), then PERP_RACE is predicted by RandomForest Classifier.
+
+
+## 1. Read Files
+
+### 1.1 Libraries
+
+```{r, message=FALSE, warning = FALSE}
+library(tidyverse)
+library(lubridate)
+library(igraph)
+#library(sf)
+#library(nycgeo)
+library(randomForest)
+```
+
+
+```{r, message = FALSE, Warning = FALSE}
+file_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+data_df <- read_csv(file_url)
+
+```
+
+### 1.2 Conversion of data types
+
+Conversion of String into Factor let analysis easier. In addition, some new data is created such as OCCUR_WDAY.
+
+
+```{r, message = FALSE, Warning = FALSE}
+data_df <- data_df %>% mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+data_df <- data_df %>% mutate(OCCUR_TIME = hms(OCCUR_TIME))
+data_df <- data_df %>% mutate(OCCUR_HOUR = hour(OCCUR_TIME))
+data_df <- data_df %>% mutate(OCCUR_TIME= OCCUR_HOUR + minute(OCCUR_TIME)/60)
+
+
+data_df <- data_df %>% mutate(BORO = as.factor(BORO))
+data_df <- data_df %>% mutate(LOCATION_DESC = as.factor(LOCATION_DESC))
+data_df <- data_df %>% mutate(PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP))
+data_df <- data_df %>% mutate(PERP_SEX = as.factor(PERP_SEX))
+
+data_df <- data_df %>% mutate(PERP_RACE = as.factor(PERP_RACE))
+data_df <- data_df %>% mutate(VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP))
+data_df <- data_df %>% mutate(VIC_SEX = as.factor(VIC_SEX))
+data_df <- data_df %>% mutate(VIC_RACE = as.factor(VIC_RACE))
+
+```
+
+### 1.3 Perpetrators' race
+
+As mentioned in the introduction, there are large numbers of cases in which perpetrator is not identified. "NA" and "UNKNOWN" occupies more than 30% of cases.
+
+```{r, message = FALSE, Warning = FALSE}
+count_perp <- data_df %>% group_by(PERP_RACE) %>% count()
+
+count_perp %>%
+  ggplot(aes(x="", y=n, fill=PERP_RACE)) +
+  geom_bar(stat="identity", width=1, col = "black") + 
+  labs(title = "Perpetrators' race of NYPD shooting data")
+```
+
+## 2. Analysis
+### 2.1 Geospatial Plot (Optional)
+
+To execute following commands, `nycgeo` and `sf` packages shall be installed.
+
+
+Map of NYC is loaded by `nyc_boundaries()` function of `nycgeo` package. To overlay map on incident data, map data should be converted to the Longitude-Latitude coordinate system (espg:4326).
+
+Since the data has more than 20,000 cases, it is better to group them by PRECINCT. Furthermore, Very minor cases, AMERICAN INDIAN/ALASKAN NATIVE, is removed from the following plot. According to the plot, difference in PRECINCT(location) between VIC_RACE is not observed. 
+
+
+```{r, message = FALSE, Warning = FALSE}
+#geom_nyc <- st_transform(nyc_boundaries(), crs = "epsg:4326")
+```
+
+```{r, message=FALSE, warning=FALSE}
+#data_df %>% nrow()
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+#perp_percinct <- data_df %>% filter(PERP_RACE != "UNKNOWN") %>%
+#  filter(!is.na(PERP_RACE)) %>%
+#  group_by(PRECINCT, PERP_RACE) %>%
+#  summarize(count = n(), lon = mean(Longitude), lat = mean(Latitude)) 
+
+
+#geom_nyc %>% ggplot() + geom_sf() + theme_void() +
+#  geom_point(data = perp_percinct %>% filter(PERP_RACE != "AMERICAN INDIAN/ALASKAN NATIVE"), 
+#             aes(x = lon, y = lat, size = count, color = PERP_RACE, alpha = 0.3)) +
+#  labs(title = "Geographical Distribution of incidents")
+
+```
+
+### 2.2 Distribution in Time
+
+By plotting density in Occoured Time by each Perpetrator's Race, distince features are obserbed. BLACK, BLACK-HISPANIC, and WHITE-HISPANIC have strong peak around midnight, whereas WHITE and ASIAN/PACIFIC ISLANDER has more distribution in day time.
+
+
+```{r, message=FALSE, warning=FALSE}
+data_df %>% filter(!is.na(PERP_RACE)) %>%
+  filter(PERP_RACE != "UNKNOWN") %>% 
+  filter(PERP_RACE != "AMERICAN INDIAN/ALASKAN NATIVE") %>%
+  ggplot(aes(x = PERP_RACE, y = OCCUR_TIME, fill = PERP_RACE)) + geom_violin() +
+  theme(legend.position = "bottom")
+  
+```
+
+
+### 2.3 Perpetrators and Victims
+
+There must be strong relationships between races of perpetrators and victims, due to higher interaction within the same races. 
+
+It can be shown by counting incident by each PERP_RACE and VIC_RACE. There are, however, better way to visualize relationship between perpetrators and victims. First, to convert the data into graph object by `graph_from_data_frame` function of `igraph` packages.
+
+In the graph plot, edges are colored (categorized) according to the count, and it shows higher number of incidents occours within the same race as expected.
+
+
+```{r, message = FALSE, Warning = FALSE}
+vic_by_perp <- data_df %>% 
+  filter(PERP_RACE != "UNKNOWN", VIC_RACE != "UNKNOWN") %>%
+  group_by(PERP_RACE, VIC_RACE) %>%
+  summarise(count = n()) %>%
+  filter(count > 50) %>%
+  mutate(color = ifelse(count < 200, "gray", 
+                        ifelse(count < 2000, "orange", "red"))) %>%
+  mutate(weight = ifelse(count < 200, 1, ifelse(count < 2000, 3, 5)))
+
+vic_by_perp <- vic_by_perp %>% 
+  mutate(count = as.numeric(count)) %>%
+  as.data.frame() 
+
+```
+
+```{r, message = FALSE, Warning = FALSE}
+
+vic_by_perp %>% slice_max(count, n = 10) %>% dplyr::select(-c(color, weight))
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+g <- graph_from_data_frame(d = vic_by_perp, directed = TRUE)
+
+plot(g, edge.width = E(g)$weight, 
+     vertex.size=25, vertex.frame.color="black",
+     vertex.color = "skyblue",
+     edge.color = E(g)$color,
+     layout=layout.kamada.kawai,
+     label.color = "green",
+     edge.curved=T,
+     main = "Perpetrators and Victims")
+
+```
+
+|count of incident  |edge color|
+|-------|----------|
+|< 50   | (removed from graph)  |
+|< 200  | gray     |
+|<2000  | orange   |
+|>= 2000| red      |
+
+
+### 2.4 Probability of Location
+
+If there is differences of crime location between PERP_RACE, it is important factor to guess who committed it.
+According to the following raster plot (probability of location), most of crimes by BLACK and BLACK HISPANIC are in Multidwell residents while WHITE and ASIAN/PACIFIC ISLANDER has peak in Private house.
+
+
+```{r message=FALSE, warning=FALSE}
+
+place_perprace_fun <- function(df, perp_race){
+  df2 <- df %>% filter(PERP_RACE == perp_race)
+  df2$probability <- (df2$count)/sum(df2$count)
+  
+  return(df2)
+  
+}
+
+place_perprace <- data_df %>% 
+  filter(!is.na(LOCATION_DESC)) %>%
+  filter(PERP_RACE != "UNKONW", !is.na(PERP_RACE)) %>%
+  group_by(LOCATION_DESC, PERP_RACE) %>%
+  summarise(count = n())
+
+place_perp_black <- place_perprace_fun(place_perprace, "BLACK")
+place_perp_bhisp <- place_perprace_fun(place_perprace, "BLACK HISPANIC")
+place_perp_whisp <- place_perprace_fun(place_perprace, "WHITE HISPANIC")
+place_perp_white <- place_perprace_fun(place_perprace, "WHITE")
+place_perp_asian <- place_perprace_fun(place_perprace, "ASIAN / PACIFIC ISLANDER")
+
+place_perp_race2 <- place_perp_black %>% 
+  bind_rows(place_perp_bhisp, place_perp_whisp, place_perp_white, place_perp_asian)
+
+place_perp_race2 %>% 
+  ggplot(aes(y = PERP_RACE, x = LOCATION_DESC, fill = probability)) + 
+  geom_raster() +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "bottom") +
+  labs(title = "Probability of Shooting Location Type")
+
+```
+
+## 3. Modeling
+
+In this chapter, prediction of PERP_RACE is attempted according to VIC_RACE, LOCATION_DESC, and OCCUR_TIME.
+
+
+### 3.1 Preprocessing Data
+
+Data frame for modeling is created by following commands.
+
+```{r, message=FALSE, warning=FALSE}
+
+ml_df <- data_df %>% 
+  filter(PERP_RACE != "UNKNOWN", VIC_RACE != "AMERICAN INDIAN/ALASKAN NATIVE") %>%
+  filter(VIC_RACE != "UNKNOWN", VIC_RACE != "AMERICAN INDIAN/ALASKAN NATIVE") %>%
+  filter(LOCATION_DESC != "UNKNOWN",LOCATION_DESC != "NONE") %>%
+  dplyr::select(PERP_RACE,  VIC_RACE, LOCATION_DESC, OCCUR_TIME)
+
+ml_df$PERP_RACE <- ml_df$PERP_RACE %>% 
+  droplevels(c("AMERICAN INDIAN/ALASKAN NATIVE", "UNKNOWN"))
+ml_df$VIC_RACE <- ml_df$VIC_RACE %>% 
+    droplevels(c("AMERICAN INDIAN/ALASKAN NATIVE", "UNKNOWN"))
+
+ml_df <- ml_df %>% drop_na() 
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(100)
+n <- nrow(ml_df)
+index_shuffle <- sample(1:n)
+train_index <- index_shuffle[1:as.integer(n*0.7)]
+test_index <- index_shuffle[(as.integer(n*0.7)+1):n]
+train_df <- ml_df[train_index,]
+test_df <- ml_df[test_index,]
+
+```
+
+### 3.2 RandomForest Classifier
+
+RandomForest Classifier of `randomForest` package is trained by `train_df`. 
+
+
+```{r, message=FALSE, warning=FALSE}
+# class of PERP_RACE is:
+# "ASIAN / PACIFIC ISLANDER", "BLACK", "BLACK HISPANIC", "WHITE", "WHITE HISPANIC"
+
+weights <- c(1,1,1,1,1)
+set.seed(100)
+model_tree <- randomForest( formula = PERP_RACE ~ VIC_RACE + LOCATION_DESC + OCCUR_TIME, data = train_df, classwt = weights)
+
+summary(model_tree)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(100)
+pred <- predict(object = model_tree, newdata = train_df, type = "class")
+train_df$pred <- pred
+
+pred <- predict(object = model_tree, newdata = test_df, type = "class")
+test_df$pred <- pred
+
+```
+
+
+### 3.3 Result
+
+Accuracy is measured by test data (`test_df`). Overall accuracy is 70%. Black HISPANIC has lowest accuracy, because they are confused with BLACK.
+
+**Overall Accuracy**
+```{r}
+sum(test_df$PERP_RACE == test_df$pred)/nrow(test_df)
+```
+
+**Accuracy of each Race**
+```{r}
+correct <- test_df %>% filter(pred == PERP_RACE) %>% group_by(pred) %>% summarise(count = n())
+overall <- test_df %>% group_by(PERP_RACE) %>% summarise(count = n())
+
+overall$accuracy <- correct$count/overall$count
+
+overall %>% dplyr::select(-count)
+
+```
+
+**BLACK-HISPANIC result**
+
+66 cases are confused with BLACK.
+
+```{r}
+test_df %>% filter(PERP_RACE == "BLACK HISPANIC") %>%
+  group_by(pred) %>%
+  summarise(count = n())
+```
+
+
+
+## 4. Conclusion and Bias
+
+Overall accuracy of prediction of PERP_RACE is about 70% which is fairly good for such small numbers of variables: VIC_RACE, LOCATION_DESC, OCCUR_TIME). It must be possible to support investigation by Machine Learning, because in the actual investigation, more detail information are available which increases accuracy.
+
+However, according to the Confusion Matrix, PERP_RACE = BLACK HISPANIC is mostly confused with BLACK. It happens due to larger amount of cases of BLACK and similar distribution of LOCATION_DESC between BLACK and BLACK HISPANIC. Machine learning result seems to be biased just like human's guess would be.
+
+Furthermore, to prevent technical error (empty class) of RandomForest, very minor cases, "AMERICAN INDIAN/ALASKAN NATIVE", were removed from data. It would also create a bias for predicting PERP_RACE by ignoring AMERICAN INDIAN/ALASKAN NATIVE's involvement.
+
+
+
+
+
+
+
