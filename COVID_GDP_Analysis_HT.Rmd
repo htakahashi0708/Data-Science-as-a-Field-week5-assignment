@@ -1,0 +1,308 @@
+---
+title: "Covid trend analysis according to GDP per capita"
+author: "Hidetake Takahashi"
+date: "2021/9/22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Table of Contents
+
+1. Data
+2. Analysis
+3. Modeling deaths per million
+4. Conclusion and Bias
+
+## Introduction
+
+The purpose of this report is to analyse relationship between covid infection and GDP per capita. Since GDP per capita generally indicates wealthy of country, higher value means well-developed medication (**strong point**) and also higher chance of infection by economical activities (**drawback**).
+
+For analysis, three data is used, global covid cases and deaths, population data from Look-up table, and GDP data from `WDI` library. These data are joined, then correlation between GDP per capita and covid cases/deaths are analysed.
+
+
+## 1. Data
+
+## 1.1 Libraries
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(WDI)
+
+```
+
+### 1.2 Global cases and deaths
+
+Global cases and deaths shows daily cases and deaths in each country since the beginning to today
+
+```{r, message=FALSE, warning=FALSE}
+
+file_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_US.csv", 
+                "time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_US.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_recovered_global.csv")
+
+urls <- str_c(file_url, file_names)
+
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+
+global_deaths <- global_deaths %>% 
+  rename("Province_State" = "Province/State", "country" = "Country/Region")
+
+global_cases <- global_cases %>% 
+  rename("Province_State" = "Province/State", "country" = "Country/Region")
+
+global_deaths <- global_deaths %>% 
+  pivot_longer(cols = -c(Province_State:Long), names_to = "date", values_to = "deaths")
+
+global_cases <- global_cases %>% 
+  pivot_longer(cols = -c(Province_State:Long), names_to = "date", values_to = "cases")
+
+global <- global_cases %>% full_join(global_deaths)
+global <- global %>% mutate(date = mdy(date))
+
+global %>% glimpse()
+
+```
+
+### 1.3 Lookup table
+
+Look-up table has Population data of each country. Some countries are divided into main area and separated region and island. Those information is filtered out to prevent mismatch with global cases/deaths data.
+
+```{r, message=FALSE, warning=FALSE}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url)
+
+#Calculate population of each country
+uid_iso <- uid %>% dplyr::select(-c(FIPS, Admin2, Province_State)) %>% 
+  rename("country" = "Country_Region") %>%
+  drop_na() %>% group_by(iso2, country) %>% summarise(Population = sum(Population))
+
+# filter out non-main region of country
+uid_iso %>% 
+  filter(!(country == "US" & (iso2 != "US"))) %>%
+  filter(!(country == "United Kingdom" & (iso2 != "GB"))) %>%
+  filter(!(country == "France" & (iso2 != "FR"))) %>%
+  filter(!(country == "Netherlands" & (iso2 != "NL"))) %>%
+  filter(!(country == "China" & (iso2 != "CN"))) %>%
+  filter(!(country == "Denmark" & (iso2 != "DK")))
+
+uid_iso %>% glimpse()
+
+```
+
+
+### 1.4 GDP Data
+GDP per capita is obtained by **WDI** package. It can be searched by countries' iso code (iso2 columns of look-up table). 
+
+```{r, message=FALSE, warning=FALSE}
+country_list <- uid_iso$iso2
+
+gdp_data = WDI(indicator='NY.GDP.PCAP.KD', country=country_list, start = 2019, end=2019)
+gdp_data <- gdp_data %>% rename("gdpPercap" = "NY.GDP.PCAP.KD" )
+
+gdp_data %>% glimpse()
+
+```
+
+
+## 2. Analysis
+
+For this analysis, only the latest data (**total number**) is necessary. Since the number of cases and deaths shows cumulative sum, maximum means total. Those values shall be grouped by country: first, exctract latest vale of each province state and country, then summing-up them by country. Furthermore, mortality rate is calculated by dividing deaths by cases.
+
+```{r, message=FALSE, warning=FALSE}
+
+global_latest <- global %>% group_by(Province_State, country) %>%
+  summarise(lon = mean(Long), lat = mean(Lat), cases = max(cases), deaths =max(deaths)) 
+
+global_latest <- global_latest %>% group_by(country) %>%
+  summarise(lon = mean(lon), lat = mean(lat), cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(mortality_rate = deaths/cases)
+
+global_latest %>% glimpse()
+
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+
+uid_iso2 <- uid_iso %>% left_join(global_latest, by = "country")
+uid_iso2 <- uid_iso2 %>% left_join(gdp_data, by = c("iso2" = "iso2c"))
+
+uid_iso2 <- uid_iso2 %>% 
+  mutate(cases_per_mill = cases/Population*10^6,                                          deaths_per_mill =deaths/Population*10^6)
+
+uid_iso2 <- uid_iso2 %>% filter(Population > cases)
+
+uid_iso2 %>% glimpse()
+
+```
+
+
+### 2.1 Mortality rate and GDP per capita
+
+Mortality rate of Covid decreases with an increase in GDP per capita. It would imply development of medication contributes recovery from the infection.
+
+```{r, message=FALSE, warning=FALSE}
+
+uid_iso2 %>% 
+  filter(deaths > 100) %>%
+  filter(Population > 10^5) %>%
+  ggplot(aes(x = gdpPercap, y = mortality_rate)) + geom_point() +
+  geom_smooth(method = "lm", se = F) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title = "Mortality rate vs GPD per capita")
+
+```
+
+
+### 2.2 Cases per million and GDP per capita
+
+According to the below plot, Cases per million increases with GDP per capita. It happends probably because of the larger economical activities in developed countries.
+
+```{r, message=FALSE, warning=FALSE}
+
+uid_iso2 %>%
+  ggplot(aes(x = gdpPercap, y = cases_per_mill, alpha = 0.3))+ geom_point() +
+  geom_smooth(method = "lm", se = F) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme(legend.position = "None") +
+  labs(title = "Cases per million vs GPD per capita") 
+
+```
+
+### 2.3 Deaths per million and GDP per capita
+
+Following plot shows deaths per million by GDP per capita. Regression line (`geom_smooth`) is not shown, because it is modeled in the chapter 3.
+
+```{r, message=FALSE, warning=FALSE}
+
+uid_iso2 %>%
+  filter(deaths_per_mill > 0) %>%
+  ggplot(aes(x = gdpPercap, y = deaths_per_mill, alpha = 0.3))+ geom_point() +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme(legend.position = "None") +
+  labs(title = "Deaths per million vs GPD per capita") 
+
+```
+
+## 3. Modeling deaths per million
+
+### 3.1 Linear model
+
+First, linear regression is attempted because deaths per mill seems to have increasing trend. As a result, adjusted-R^2 is 0.258 which is not that accurate although it is valid according to the p-value. Therefore, another model shall also be considered.
+
+
+```{r, message=FALSE, warning=FALSE}
+data_for_model <- uid_iso2 %>% 
+  filter(deaths_per_mill > 0) 
+
+model_death_lm <- lm(data = data_for_model, 
+               formula = log10(deaths_per_mill) ~ log10(gdpPercap))
+summary(model_death_lm)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+pred_lm1 <- predict(object = model_death_lm, data_for_model)
+data_for_model$deaths_per_mill_pred_lm <- 10^pred_lm1
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+data_for_model %>% ggplot(aes(x=gdpPercap, y = deaths_per_mill)) +
+  geom_point(col = "blue", alpha = 0.6) + 
+  geom_point(aes(y = deaths_per_mill_pred_lm), col = "red", alpha = 0.3) +
+  scale_x_log10() + scale_y_log10() +
+  labs(title = "Linear regression")
+```
+
+### 3.2 Polynomial model
+
+To increase adjusted-R^2, polynomial regression model, `log10(deaths_per_mill) ~ log10(gdpPercap)^2 + log10(gdpPercap)^3` , is constructed. Adjusted R^2 of this model is 0.38. It looks much better than Linear Model.
+
+```{r, message=FALSE, warning=FALSE}
+data_for_model <- data_for_model %>%
+  mutate(gdpPercap_log10_2 = log10(gdpPercap)^2,
+         gdpPercap_log10_3 = log10(gdpPercap)^3 )
+
+
+model_death_poly <- lm(data = data_for_model, 
+                formula = log10(deaths_per_mill) ~ gdpPercap_log10_2 + gdpPercap_log10_3)
+
+
+summary(model_death_poly)
+```
+
+```{r, message=FALSE, warning=FALSE}
+pred_poly1 <- predict(object = model_death_poly, data_for_model)
+data_for_model$deaths_per_mill_pred_poly <- 10^pred_poly1
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+max_value <- data_for_model$deaths_per_mill_pred_poly %>% max(na.rm = TRUE)
+max_indx <- which(data_for_model$deaths_per_mill_pred_poly == max_value)
+max_gdpPercap <- data_for_model$gdpPercap[max_indx]
+
+data_for_model %>% ggplot(aes(x=gdpPercap, y = deaths_per_mill)) +
+  geom_point(col = "blue", alpha = 0.6) + 
+  geom_point(aes(y = deaths_per_mill_pred_poly), col = "red", alpha = 0.3) +
+  scale_x_log10() + scale_y_log10() +
+  labs(title = paste("Polynomial regression, max at gdpPercap = ", as.integer(max_gdpPercap))) +
+  geom_vline(xintercept = max_gdpPercap, color = "black", linetype = "dashed")
+```
+
+
+### 3.3 Comparing Residuals
+
+Residual of both regression model is plotted in the below figure. Whereas Linear Model has skewed distribution around 10^4, Polynomial Model has more normally distributed accross all GDP per capita.
+
+
+```{r, message=FALSE, warning=FALSE}
+
+data_for_model %>% 
+  mutate(residual_Linear = log10(deaths_per_mill) - log10(deaths_per_mill_pred_lm)) %>%
+  mutate(residual_Polynomial = log10(deaths_per_mill) - log10(deaths_per_mill_pred_poly)) %>%
+  as.data.frame() %>%
+  dplyr::select(gdpPercap, residual_Linear, residual_Polynomial) %>%
+  gather(key, val, -gdpPercap) %>%
+  ggplot(aes(x = gdpPercap, y = val)) + geom_point() +
+  facet_wrap(.~key) +
+  scale_x_log10() + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual of regressions (left: Liner, right:Poynomial)") +
+  ylab("Residuals of log10 scale")
+
+```
+
+
+## 4. Conclusion and Bias
+
+**Result**
+
+Mortality rate (death rate) decreases with GDP per capita. It implies medical development. Cases per million increases with GDP per capita, probably because Developed country has higher economical activities and people's transportation. It leads to larger numbers of infection.
+
+Deaths per million can be predicted based on GDP per capita. Especially, polynomial model did fairly good job. According to regression model, deaths per million has **peak trend at GDP per capita 21000**. It seems that GDP per capita 21000 is the **trade off point**  of decreasing Mortality rate(**good effect**) and increasing number of Infection (**adverse effect**).
+
+**Bias**
+
+There would be bias in GDP data. For analysis, Latest covid data is combined with GDP data of 2019. 2019 is selected because 2020 data is not available enough. Therefore, this analysis is based on an assumption that GDP is not changed from 2019 to 2021. However, GDP would be dropped due to the pandemic. This impact is not considered. This type of issues come out sometimes when multiple data from different sources are combined.
+
