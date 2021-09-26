@@ -104,9 +104,8 @@ uid_iso %>% glimpse()
 GDP per capita is obtained by **WDI** package. It can be searched by countries' iso code (iso2 columns of look-up table). 
 
 ```{r, message=FALSE, warning=FALSE}
-country_list <- uid_iso$iso2
 
-gdp_data = WDI(indicator='NY.GDP.PCAP.KD', country=country_list, start = 2019, end=2019)
+gdp_data = WDI(indicator='NY.GDP.PCAP.KD', country="all", start = 2019, end=2019)
 gdp_data <- gdp_data %>% rename("gdpPercap" = "NY.GDP.PCAP.KD" )
 
 gdp_data %>% glimpse()
