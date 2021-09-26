@@ -144,9 +144,11 @@ vic_by_perp <- data_df %>%
   group_by(PERP_RACE, VIC_RACE) %>%
   summarise(count = n()) %>%
   filter(count > 50) %>%
-  mutate(color = ifelse(count < 200, "gray", 
-                        ifelse(count < 2000, "orange", "red"))) %>%
-  mutate(weight = ifelse(count < 200, 1, ifelse(count < 2000, 3, 5)))
+  mutate(color = ifelse(count < 400, "gray", 
+                        ifelse(count < 800, "darkgreen",
+                        ifelse(count < 2000, "orange", "red")))) %>%
+  mutate(weight = ifelse(count < 400, 1, ifelse(count< 800,2 ,
+                                          ifelse(count < 2000, 3, 5))))
 
 vic_by_perp <- vic_by_perp %>% 
   mutate(count = as.numeric(count)) %>%
@@ -178,8 +180,9 @@ plot(g, edge.width = E(g)$weight,
 |count of incident  |edge color|
 |-------|----------|
 |< 50   | (removed from graph)  |
-|< 200  | gray     |
-|<2000  | orange   |
+|< 400  | gray     |
+|< 800|   green |
+|< 2000  | orange   |
 |>= 2000| red      |
 
 
